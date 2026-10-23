@@ -9,6 +9,7 @@ import {
   downloadConsentRecord,
   fetchVideoBlobUrl,
 } from '../lib/api'
+import { POSITIONS, getPosition } from '../config'
 
 export default function Admin() {
   const [user, setUser] = useState(null)
@@ -24,6 +25,8 @@ export default function Admin() {
   const [videoSrcs, setVideoSrcs] = useState({})
   // Bumped by the Retry button to re-run the video loading effect.
   const [videoAttempt, setVideoAttempt] = useState(0)
+  // Empty string means "all positions".
+  const [positionFilter, setPositionFilter] = useState('')
 
   useEffect(() => {
     let active = true
@@ -174,6 +177,19 @@ export default function Admin() {
     )
   }
 
+  const positionBadge = (id) => (
+    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+      {getPosition(id)?.title || 'Unspecified'}
+    </span>
+  )
+
+  // Applications received before positions existed have no position value.
+  const visibleApplicants = positionFilter === 'unassigned'
+    ? applicants.filter((a) => !getPosition(a.position))
+    : positionFilter
+      ? applicants.filter((a) => a.position === positionFilter)
+      : applicants
+
   if (!user) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -242,6 +258,39 @@ export default function Admin() {
           </div>
         )}
 
+        {applicants.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 mb-6">
+            {[
+              { key: '', label: 'All positions' },
+              ...POSITIONS.map((p) => ({ key: p.id, label: p.title })),
+              ...(applicants.some((a) => !getPosition(a.position))
+                ? [{ key: 'unassigned', label: 'Unspecified' }]
+                : []),
+            ].map(({ key, label }) => {
+              const count = key === ''
+                ? applicants.length
+                : key === 'unassigned'
+                  ? applicants.filter((a) => !getPosition(a.position)).length
+                  : applicants.filter((a) => a.position === key).length
+              const active = positionFilter === key
+              return (
+                <button
+                  key={key || 'all'}
+                  type="button"
+                  onClick={() => setPositionFilter(key)}
+                  className={`px-3 py-1.5 rounded-full text-sm font-medium border transition ${
+                    active
+                      ? 'bg-pink-600 text-white border-pink-600'
+                      : 'bg-white text-gray-700 border-gray-200 hover:border-pink-300'
+                  }`}
+                >
+                  {label} ({count})
+                </button>
+              )
+            })}
+          </div>
+        )}
+
         {confirmDelete && (
           <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
             <div className="bg-white rounded-xl shadow-xl p-6 max-w-sm mx-4">
@@ -267,15 +316,19 @@ export default function Admin() {
           </div>
         )}
 
-        {applicants.length === 0 ? (
+        {visibleApplicants.length === 0 ? (
           <div className="bg-white rounded-xl shadow-sm p-12 text-center">
-            <p className="text-gray-500 text-lg">No applications yet.</p>
+            <p className="text-gray-500 text-lg">
+              {applicants.length === 0
+                ? 'No applications yet.'
+                : 'No applications for this position yet.'}
+            </p>
           </div>
         ) : (
           <div className="grid md:grid-cols-3 gap-6">
             <div className="md:col-span-1 space-y-3">
               <h2 className="font-semibold text-gray-700 mb-2">All Applicants</h2>
-              {applicants.map((a) => (
+              {visibleApplicants.map((a) => (
                 <button
                   key={a.id}
                   onClick={() => setSelectedApplicant(a)}
@@ -289,6 +342,7 @@ export default function Admin() {
                     <div>
                       <p className="font-medium">{a.first_name} {a.last_name}</p>
                       <p className="text-sm text-gray-500">{a.email}</p>
+                      <div className="mt-1.5">{positionBadge(a.position)}</div>
                     </div>
                     {statusBadge(a.status)}
                   </div>
@@ -303,9 +357,12 @@ export default function Admin() {
               {selectedApplicant ? (
                 <div className="bg-white rounded-xl shadow-sm p-6 space-y-6">
                   <div className="flex justify-between items-start">
-                    <h2 className="text-xl font-bold">
-                      {selectedApplicant.first_name} {selectedApplicant.last_name}
-                    </h2>
+                    <div>
+                      <h2 className="text-xl font-bold">
+                        {selectedApplicant.first_name} {selectedApplicant.last_name}
+                      </h2>
+                      <div className="mt-2">{positionBadge(selectedApplicant.position)}</div>
+                    </div>
                     {statusBadge(selectedApplicant.status)}
                   </div>
 

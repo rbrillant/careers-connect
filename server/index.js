@@ -170,6 +170,9 @@ app.use(
 // ---- Helpers ----------------------------------------------------------
 const REQUIRED_FIELDS = ['first_name', 'last_name', 'email', 'phone', 'address', 'date_of_birth']
 
+// Must match the ids in src/config.js POSITIONS.
+const POSITION_IDS = ['front-desk', 'content-manager']
+
 function removeLocalFile(file) {
   if (!file?.filename) return
   fs.unlink(path.join(uploadsDir, file.filename), () => {})
@@ -318,6 +321,11 @@ app.post('/api/applicants', (req, res) => {
       }
     }
 
+    if (!POSITION_IDS.includes(String(body.position || '').trim())) {
+      await cleanupFiles([english, french])
+      return res.status(400).json({ error: 'Please choose a valid position.' })
+    }
+
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) {
       await cleanupFiles([english, french])
       return res.status(400).json({ error: 'Please provide a valid email address.' })
@@ -404,9 +412,9 @@ app.post('/api/applicants', (req, res) => {
     try {
       await db.execute({
         sql: `INSERT INTO applicants
-                (id, first_name, last_name, email, phone, address, date_of_birth, gender,
+                (id, first_name, last_name, email, phone, address, date_of_birth, position, gender,
                  consented, signature_name, policy_version, consented_at, consent_ip, consent_user_agent)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           id,
           String(body.first_name).trim(),
@@ -415,7 +423,11 @@ app.post('/api/applicants', (req, res) => {
           String(body.phone).trim(),
           String(body.address).trim(),
           String(body.date_of_birth).trim(),
-          'female',
+          String(body.position).trim(),
+          // Roles are open to everyone, and gender is not collected. Written as
+          // NULL explicitly because older databases still default this column
+          // to 'female'.
+          null,
           1,
           consentRecord.signature_name,
           consentRecord.policy_version,

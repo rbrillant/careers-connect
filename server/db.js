@@ -53,7 +53,8 @@ async function init() {
       phone TEXT,
       address TEXT,
       date_of_birth TEXT,
-      gender TEXT DEFAULT 'female',
+      position TEXT,
+      gender TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -72,6 +73,22 @@ async function init() {
     CREATE INDEX IF NOT EXISTS idx_videos_applicant ON videos(applicant_id);
     CREATE INDEX IF NOT EXISTS idx_applicants_created ON applicants(created_at);
   `)
+
+  // Columns added after the first release. Each one upgrades existing databases
+  // in place (SQLite has no "ADD COLUMN IF NOT EXISTS").
+  const applicantColumns = [
+    ['position', 'TEXT'],
+  ]
+
+  for (const [name, definition] of applicantColumns) {
+    try {
+      await db.execute(`ALTER TABLE applicants ADD COLUMN ${name} ${definition}`)
+    } catch (e) {
+      if (!/duplicate column/i.test(String(e.message))) {
+        console.warn(`[db] could not add column ${name}:`, e.message)
+      }
+    }
+  }
 
   // Consent columns are added separately so existing databases are upgraded
   // in place (SQLite has no "ADD COLUMN IF NOT EXISTS").

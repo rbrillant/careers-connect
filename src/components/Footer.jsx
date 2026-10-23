@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { JOB } from '../config'
+import { SITE } from '../config'
 
 export default function Footer() {
   return (
@@ -14,7 +14,7 @@ export default function Footer() {
           </Link>
         </p>
         <p className="text-xs mt-1 text-gray-500">
-          {JOB.footerNote}
+          {SITE.footerNote}
         </p>
       </div>
     </footer>

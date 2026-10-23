@@ -1,18 +1,25 @@
 import { useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { createApplication } from '../lib/api'
 import { POLICY_VERSION } from '../privacy'
+import { POSITIONS, getPosition } from '../config'
 import VideoStep from '../components/VideoStep'
 
 const STEPS = ['Personal Info', 'English Video', 'French Video', 'Review & Submit']
 
 export default function Apply() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [step, setStep] = useState(1)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
+  // Preselect the role when arriving from a home-page card (?position=...).
+  const requestedPosition = searchParams.get('position')
+  const initialPosition = getPosition(requestedPosition) ? requestedPosition : ''
+
   const [form, setForm] = useState({
+    position: initialPosition,
     first_name: '',
     last_name: '',
     email: '',
@@ -20,6 +27,8 @@ export default function Apply() {
     address: '',
     date_of_birth: '',
   })
+
+  const selectedPosition = getPosition(form.position)
 
   const [englishFile, setEnglishFile] = useState(null)
   const [frenchFile, setFrenchFile] = useState(null)
@@ -36,7 +45,15 @@ export default function Apply() {
   const handleStep1Next = (e) => {
     e.preventDefault()
     setError('')
-    const { first_name, last_name, email, phone, address, date_of_birth } = form
+    const { position, first_name, last_name, email, phone, address, date_of_birth } = form
+    if (!position) {
+      setError('Please choose the position you are applying for.')
+      return
+    }
+    if (!getPosition(position)) {
+      setError('That position is no longer open. Please choose another one.')
+      return
+    }
     if (!first_name || !last_name || !email || !phone || !address || !date_of_birth) {
       setError('All fields are required.')
       return
@@ -127,6 +144,39 @@ export default function Apply() {
           {step === 1 && !submitted && (
             <form onSubmit={handleStep1Next} className="space-y-4">
               <h2 className="text-2xl font-bold mb-6">Personal Information</h2>
+
+              <div>
+                <span className="block text-sm font-medium text-gray-700 mb-2">
+                  Position you are applying for
+                </span>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  {POSITIONS.map((position) => {
+                    const active = form.position === position.id
+                    return (
+                      <label
+                        key={position.id}
+                        className={`cursor-pointer rounded-lg border p-4 transition ${
+                          active
+                            ? 'border-pink-500 bg-pink-50 ring-2 ring-pink-200'
+                            : 'border-gray-300 hover:border-pink-300'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="position"
+                          value={position.id}
+                          checked={active}
+                          onChange={(e) => { setError(''); handleChange(e) }}
+                          className="sr-only"
+                          required
+                        />
+                        <span className="block font-semibold text-gray-900">{position.title}</span>
+                        <span className="block text-xs text-gray-500 mt-1">{position.summary}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              </div>
               <div className="grid md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">First Name</label>
@@ -164,7 +214,9 @@ export default function Apply() {
             <div className="space-y-6">
               <VideoStep
                 title="English Video"
-                description="Record your introduction in English. Tell us your name, why you want to be our Podcast Host, and why you want to work with us."
+                description={`Record your introduction in English. Tell us your name, why you want to be our ${
+                  selectedPosition ? selectedPosition.title : 'next team member'
+                }, and why you want to work with us.`}
                 language="English"
                 file={englishFile}
                 onFile={(f) => { setError(''); setEnglishFile(f) }}
@@ -203,6 +255,7 @@ export default function Apply() {
               <h2 className="text-2xl font-bold">Review & Submit</h2>
 
               <div className="bg-gray-50 rounded-lg p-4 space-y-2 text-sm">
+                <p><span className="font-medium">Position:</span> {selectedPosition?.title || '—'}</p>
                 <p><span className="font-medium">Name:</span> {form.first_name} {form.last_name}</p>
                 <p><span className="font-medium">Email:</span> {form.email}</p>
                 <p><span className="font-medium">Phone:</span> {form.phone}</p>
@@ -284,7 +337,10 @@ export default function Apply() {
             <div className="text-center py-8 space-y-4">
               <div className="text-6xl mb-4">&#10003;</div>
               <h2 className="text-2xl font-bold text-green-600">Application Submitted!</h2>
-              <p className="text-gray-600">Thank you for applying, {form.first_name}. We have received your personal information and videos.</p>
+              <p className="text-gray-600">
+                Thank you, {form.first_name}. We have received your application for{' '}
+                <strong>{selectedPosition?.title || 'this position'}</strong>.
+              </p>
               <p className="text-gray-500 text-sm">Our team will review your application and get back to you soon.</p>
               <button onClick={() => navigate('/')} className="mt-6 px-8 py-3 bg-pink-600 text-white rounded-lg font-medium hover:bg-pink-700 transition">Back to Home</button>
             </div>
