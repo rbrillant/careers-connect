@@ -1,7 +1,14 @@
-// API client for the self-hosted Node + SQLite backend.
-// Set VITE_API_URL to the backend's public URL (e.g. https://your-api.onrender.com).
+// API client for the self-hosted Node + Turso backend.
+//
+// VITE_API_URL always wins. When it is not set, production builds point at the
+// deployed API and development builds point at the local one, so a deploy from
+// a clean checkout still works without extra dashboard configuration.
 
-export const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '')
+const DEFAULT_API_URL = import.meta.env.PROD
+  ? 'https://careers-connect-api.onrender.com'
+  : 'http://localhost:8787'
+
+export const API_URL = (import.meta.env.VITE_API_URL || DEFAULT_API_URL).replace(/\/$/, '')
 
 const TOKEN_KEY = 'careers_connect_token'
 
@@ -23,7 +30,17 @@ function authHeaders() {
 }
 
 async function request(path, options = {}) {
-  const res = await fetch(`${API_URL}${path}`, options)
+  let res
+  try {
+    res = await fetch(`${API_URL}${path}`, options)
+  } catch {
+    // Network error, DNS failure, server asleep or unreachable.
+    const error = new Error(
+      'Could not reach the application server. Please check your connection and try again.'
+    )
+    error.status = 0
+    throw error
+  }
   const data = await res.json().catch(() => ({}))
 
   if (!res.ok) {
