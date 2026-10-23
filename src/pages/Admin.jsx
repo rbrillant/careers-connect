@@ -1,8 +1,17 @@
 import { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import {
+  login,
+  logout,
+  getCurrentUser,
+  getApplicants,
+  updateApplicantStatus,
+  deleteApplicant,
+  downloadConsentRecord,
+  fetchVideoBlobUrl,
+} from '../lib/api'
 
 export default function Admin() {
-  const [session, setSession] = useState(null)
+  const [user, setUser] = useState(null)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -10,44 +19,37 @@ export default function Admin() {
   const [applicants, setApplicants] = useState([])
   const [selectedApplicant, setSelectedApplicant] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)
-
-  if (!supabase) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-8 max-w-md text-center">
-          <h2 className="text-xl font-bold text-yellow-800 mb-2">Configuration Required</h2>
-          <p className="text-yellow-700">
-            Supabase environment variables are missing. Create a <code>.env</code> file with
-            <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code>.
-          </p>
-        </div>
-      </div>
-    )
-  }
+  const [downloadingConsent, setDownloadingConsent] = useState(false)
+  // Video sources keyed by language; populated lazily with authenticated blobs.
+  const [videoSrcs, setVideoSrcs] = useState({})
+  // Bumped by the Retry button to re-run the video loading effect.
+  const [videoAttempt, setVideoAttempt] = useState(0)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session)
-      if (session) fetchApplicants()
-    })
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session)
-      if (session) fetchApplicants()
-    })
-
-    return () => subscription.unsubscribe()
+    let active = true
+    ;(async () => {
+      const current = await getCurrentUser()
+      if (!active) return
+      setUser(current)
+      if (current) fetchApplicants()
+    })()
+    return () => {
+      active = false
+    }
   }, [])
 
   const fetchApplicants = async () => {
-    const { data, error } = await supabase
-      .from('applicants')
-      .select('*, videos(*)')
-      .order('created_at', { ascending: false })
-
-    if (!error && data) setApplicants(data)
+    try {
+      const data = await getApplicants()
+      setApplicants(data)
+    } catch (err) {
+      if (err.status === 401) {
+        logout()
+        setUser(null)
+      } else {
+        setError(err.message)
+      }
+    }
   }
 
   const handleLogin = async (e) => {
@@ -55,104 +57,108 @@ export default function Admin() {
     setLoading(true)
     setError('')
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
-
-    setLoading(false)
-    if (error) setError(error.message)
+    try {
+      const loggedIn = await login(email, password)
+      setUser(loggedIn)
+      await fetchApplicants()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
   }
 
-  const handleSignUp = async (e) => {
-    e.preventDefault()
-    setLoading(true)
-    setError('')
-
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-    })
-
-    setLoading(false)
-    if (error) setError(error.message)
-    else setError('Check your email for the confirmation link.')
-  }
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut()
-    setSession(null)
+  const handleLogout = () => {
+    logout()
+    setUser(null)
     setApplicants([])
     setSelectedApplicant(null)
   }
 
   const handleConfirm = async (id) => {
     setError('')
-    const { error: updateError } = await supabase
-      .from('applicants')
-      .update({ status: 'confirmed' })
-      .eq('id', id)
-
-    if (updateError) {
-      setError(updateError.message)
-      return
-    }
-
-    setApplicants((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, status: 'confirmed' } : a))
-    )
-    if (selectedApplicant?.id === id) {
-      setSelectedApplicant((prev) => ({ ...prev, status: 'confirmed' }))
+    try {
+      await updateApplicantStatus(id, 'confirmed')
+      setApplicants((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, status: 'confirmed' } : a))
+      )
+      if (selectedApplicant?.id === id) {
+        setSelectedApplicant((prev) => ({ ...prev, status: 'confirmed' }))
+      }
+    } catch (err) {
+      setError(err.message)
     }
   }
 
   const handleDelete = async (id) => {
     setError('')
-
-    const { data: videosToDelete } = await supabase
-      .from('videos')
-      .select('video_url')
-      .eq('applicant_id', id)
-
-    const { error: deleteError } = await supabase
-      .from('videos')
-      .delete()
-      .eq('applicant_id', id)
-
-    if (deleteError) {
-      setError(deleteError.message)
-      return
+    try {
+      await deleteApplicant(id)
+      setApplicants((prev) => prev.filter((a) => a.id !== id))
+      if (selectedApplicant?.id === id) setSelectedApplicant(null)
+      setConfirmDelete(null)
+    } catch (err) {
+      setError(err.message)
     }
-
-    if (videosToDelete?.length > 0) {
-      const filePaths = videosToDelete.map((v) => {
-        const parts = v.video_url.split('/applicant-videos/')
-        return parts[1] || ''
-      }).filter(Boolean)
-      if (filePaths.length > 0) {
-        await supabase.storage.from('applicant-videos').remove(filePaths)
-      }
-    }
-
-    const { error: applicantError } = await supabase
-      .from('applicants')
-      .delete()
-      .eq('id', id)
-
-    if (applicantError) {
-      setError(applicantError.message)
-      return
-    }
-
-    setApplicants((prev) => prev.filter((a) => a.id !== id))
-    if (selectedApplicant?.id === id) setSelectedApplicant(null)
-    setConfirmDelete(null)
   }
 
-  const getVideoUrl = (language) => {
-    if (!selectedApplicant?.videos) return null
-    const video = selectedApplicant.videos.find((v) => v.language === language)
-    return video?.video_url || null
+  // Load the selected applicant's videos. API-streamed videos need the admin
+  // token, so they are fetched and turned into blob URLs.
+  useEffect(() => {
+    let active = true
+    const created = []
+
+    if (!selectedApplicant?.videos?.length) {
+      setVideoSrcs({})
+      return () => {}
+    }
+
+    ;(async () => {
+      const next = {}
+      for (const video of selectedApplicant.videos) {
+        // Decide from the STORED value, not the resolved one: an API path like
+        // "/api/videos/..." becomes an absolute URL once resolved, which would
+        // wrongly look like a public external link and skip the auth header.
+        const stored = String(video.video_url || '')
+        if (!stored) continue
+        try {
+          if (/^https?:\/\//i.test(stored)) {
+            // Public bucket URL — safe to hand straight to the video element.
+            next[video.language] = stored
+          } else {
+            // Streamed from this API, which requires the admin token.
+            const blobUrl = await fetchVideoBlobUrl(stored)
+            created.push(blobUrl)
+            next[video.language] = blobUrl
+          }
+        } catch {
+          next[video.language] = null
+        }
+      }
+      if (active) setVideoSrcs(next)
+    })()
+
+    return () => {
+      active = false
+      for (const url of created) {
+        if (url?.startsWith('blob:')) URL.revokeObjectURL(url)
+      }
+    }
+  }, [selectedApplicant, videoAttempt])
+
+  const getVideoUrl = (language) => videoSrcs[language] || null
+
+  const handleDownloadConsent = async () => {
+    if (!selectedApplicant) return
+    setError('')
+    setDownloadingConsent(true)
+    try {
+      await downloadConsentRecord(selectedApplicant)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setDownloadingConsent(false)
+    }
   }
 
   const statusBadge = (status) => {
@@ -168,7 +174,7 @@ export default function Admin() {
     )
   }
 
-  if (!session) {
+  if (!user) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="bg-white rounded-xl shadow-sm p-8 w-full max-w-md">
@@ -199,21 +205,13 @@ export default function Admin() {
                 required
               />
             </div>
-            <div className="flex gap-3 pt-2">
+            <div className="pt-2">
               <button
                 type="submit"
                 disabled={loading}
-                className="flex-1 py-2 bg-pink-600 text-white rounded-lg font-medium hover:bg-pink-700 transition disabled:opacity-50"
+                className="w-full py-2 bg-pink-600 text-white rounded-lg font-medium hover:bg-pink-700 transition disabled:opacity-50"
               >
                 {loading ? 'Loading...' : 'Login'}
-              </button>
-              <button
-                type="button"
-                onClick={handleSignUp}
-                disabled={loading}
-                className="px-4 py-2 border rounded-lg hover:bg-gray-50 transition disabled:opacity-50"
-              >
-                Sign Up
               </button>
             </div>
           </form>
@@ -227,12 +225,15 @@ export default function Admin() {
       <div className="max-w-6xl mx-auto px-4">
         <div className="flex justify-between items-center mb-8">
           <h1 className="text-2xl font-bold">Applicants Dashboard</h1>
-          <button
-            onClick={handleLogout}
-            className="px-4 py-2 border rounded-lg hover:bg-gray-100 text-sm"
-          >
-            Logout
-          </button>
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-gray-500">{user.email}</span>
+            <button
+              onClick={handleLogout}
+              className="px-4 py-2 border rounded-lg hover:bg-gray-100 text-sm"
+            >
+              Logout
+            </button>
+          </div>
         </div>
 
         {error && (
@@ -334,27 +335,88 @@ export default function Admin() {
                   <div className="border-t pt-6">
                     <h3 className="font-semibold mb-4">Videos</h3>
                     <div className="grid md:grid-cols-2 gap-4">
-                      <div>
-                        <p className="text-sm font-medium text-gray-700 mb-2">English Video</p>
-                        {getVideoUrl('english') ? (
-                          <video controls className="w-full rounded-lg border" src={getVideoUrl('english')}>
-                            Your browser does not support video playback.
-                          </video>
-                        ) : (
-                          <p className="text-sm text-gray-400">Not uploaded</p>
-                        )}
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-gray-700 mb-2">French Video</p>
-                        {getVideoUrl('french') ? (
-                          <video controls className="w-full rounded-lg border" src={getVideoUrl('french')}>
-                            Your browser does not support video playback.
-                          </video>
-                        ) : (
-                          <p className="text-sm text-gray-400">Not uploaded</p>
-                        )}
-                      </div>
+                      {[
+                        { language: 'english', label: 'English Video' },
+                        { language: 'french', label: 'French Video' },
+                      ].map(({ language, label }) => (
+                        <div key={language}>
+                          <p className="text-sm font-medium text-gray-700 mb-2">{label}</p>
+                          {getVideoUrl(language) ? (
+                            <video
+                              controls
+                              className="w-full rounded-lg border"
+                              src={getVideoUrl(language)}
+                            >
+                              Your browser does not support video playback.
+                            </video>
+                          ) : videoSrcs[language] === null ? (
+                            <div className="text-sm text-gray-500">
+                              <p>Could not load this video.</p>
+                              <button
+                                type="button"
+                                onClick={() => setVideoAttempt((n) => n + 1)}
+                                className="mt-1 text-pink-600 hover:underline font-medium"
+                              >
+                                Retry
+                              </button>
+                            </div>
+                          ) : (
+                            <p className="text-sm text-gray-400">Loading video…</p>
+                          )}
+                        </div>
+                      ))}
                     </div>
+                  </div>
+
+                  <div className="border-t pt-6">
+                    <h3 className="font-semibold mb-4">Privacy & Consent</h3>
+                    {selectedApplicant.consented ? (
+                      <div className="space-y-3 text-sm">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            Consent given
+                          </span>
+                          <span className="text-gray-500">
+                            Policy {selectedApplicant.policy_version || '—'}
+                          </span>
+                        </div>
+                        <div className="grid md:grid-cols-2 gap-4">
+                          <div>
+                            <span className="text-gray-500">Signature:</span>
+                            <p className="italic">{selectedApplicant.signature_name}</p>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">Signed at:</span>
+                            <p>
+                              {selectedApplicant.consented_at
+                                ? new Date(selectedApplicant.consented_at).toLocaleString()
+                                : '—'}
+                            </p>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">IP address:</span>
+                            <p className="font-mono text-xs">{selectedApplicant.consent_ip || '—'}</p>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">Browser / device:</span>
+                            <p className="text-xs break-words">
+                              {selectedApplicant.consent_user_agent || '—'}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={handleDownloadConsent}
+                          disabled={downloadingConsent}
+                          className="mt-2 px-4 py-2 border border-pink-600 text-pink-600 rounded-lg hover:bg-pink-50 transition text-sm disabled:opacity-50"
+                        >
+                          {downloadingConsent ? 'Preparing...' : 'Download consent record (PDF)'}
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                        No consent recorded
+                      </span>
+                    )}
                   </div>
 
                   <div className="border-t pt-4 flex gap-3">

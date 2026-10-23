@@ -1,7 +1,8 @@
-import { useState, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
-import emailjs from '@emailjs/browser'
-import { supabase } from '../lib/supabase'
+import { useState } from 'react'
+import { useNavigate, Link } from 'react-router-dom'
+import { createApplication } from '../lib/api'
+import { POLICY_VERSION } from '../privacy'
+import VideoStep from '../components/VideoStep'
 
 const STEPS = ['Personal Info', 'English Video', 'French Video', 'Review & Submit']
 
@@ -10,8 +11,6 @@ export default function Apply() {
   const [step, setStep] = useState(1)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
-  const engInputRef = useRef()
-  const frInputRef = useRef()
 
   const [form, setForm] = useState({
     first_name: '',
@@ -25,19 +24,8 @@ export default function Apply() {
   const [englishFile, setEnglishFile] = useState(null)
   const [frenchFile, setFrenchFile] = useState(null)
   const [submitted, setSubmitted] = useState(false)
-
-  if (!supabase) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-8 max-w-md text-center">
-          <h2 className="text-xl font-bold text-yellow-800 mb-2">Configuration Required</h2>
-          <p className="text-yellow-700">
-            Supabase environment variables are missing. Create a <code>.env</code> file.
-          </p>
-        </div>
-      </div>
-    )
-  }
+  const [consentChecked, setConsentChecked] = useState(false)
+  const [signatureName, setSignatureName] = useState('')
 
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value })
@@ -60,85 +48,49 @@ export default function Apply() {
     setStep(2)
   }
 
-  const validateFile = (file, setter) => {
-    if (!file) {
-      setError('Please select a video file.')
-      return false
-    }
-    if (file.size > 100 * 1024 * 1024) {
-      setError('File too large. Maximum size is 100MB.')
-      return false
-    }
-    if (!file.type.startsWith('video/')) {
-      setError('Please select a valid video file.')
-      return false
-    }
-    return true
-  }
-
-  const uploadFile = async (file, applicantId, language) => {
-    const fileName = `${applicantId}/${language}_${Date.now()}_${file.name}`
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-    const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
-
-    const res = await fetch(
-      `${supabaseUrl}/storage/v1/object/applicant-videos/${fileName}`,
-      {
-        method: 'POST',
-        headers: {
-          apikey: anonKey,
-          Authorization: `Bearer ${anonKey}`,
-          'Content-Type': file.type || 'application/octet-stream',
-        },
-        body: file,
-      }
-    )
-
-    if (!res.ok) {
-      const err = await res.text()
-      throw new Error(err || 'Upload failed')
-    }
-
-    return `${supabaseUrl}/storage/v1/object/public/applicant-videos/${fileName}`
-  }
-
   const handleSubmit = async () => {
     setError('')
+
+    if (!consentChecked) {
+      setError('Please tick the box to agree to the Privacy Policy.')
+      return
+    }
+
+    const trim = (s) => String(s || '').trim()
+    if (trim(signatureName).length < 3) {
+      setError('Please type your full name as your signature.')
+      return
+    }
+
+    // The signature must contain the first and last name entered in step 1.
+    const normalize = (s) =>
+      String(s || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z\s'-]/g, ' ')
+        .split(/\s+/)
+        .filter(Boolean)
+
+    const nameParts = normalize(`${form.first_name} ${form.last_name}`)
+    const signatureParts = normalize(signatureName)
+    const matchesName =
+      nameParts.length > 0 && nameParts.every((part) => signatureParts.includes(part))
+
+    if (!matchesName) {
+      setError('Your signature must match your first and last name exactly as entered above.')
+      return
+    }
+
     setSubmitting(true)
 
     try {
-      const newId = crypto.randomUUID()
-
-      const { error: insertError } = await supabase
-        .from('applicants')
-        .insert([{ id: newId, ...form, gender: 'female' }])
-
-      if (insertError) throw new Error(insertError.message)
-
-      const engUrl = await uploadFile(englishFile, newId, 'english')
-      const frUrl = await uploadFile(frenchFile, newId, 'french')
-
-      const { error: v1Error } = await supabase.from('videos').insert([
-        { applicant_id: newId, language: 'english', video_url: engUrl },
-      ])
-      if (v1Error) throw new Error(v1Error.message)
-
-      const { error: v2Error } = await supabase.from('videos').insert([
-        { applicant_id: newId, language: 'french', video_url: frUrl },
-      ])
-      if (v2Error) throw new Error(v2Error.message)
-
-      const serviceId = import.meta.env.VITE_EMAILJS_SERVICE_ID
-      const templateId = import.meta.env.VITE_EMAILJS_TEMPLATE_ID
-      const publicKey = import.meta.env.VITE_EMAILJS_PUBLIC_KEY
-      if (serviceId && templateId && publicKey) {
-        emailjs.send(serviceId, templateId, {
-          first_name: form.first_name,
-          last_name: form.last_name,
-          email: form.email,
-        }, publicKey).catch(() => {})
-      }
-
+      await createApplication({
+        fields: form,
+        englishFile,
+        frenchFile,
+        consent: { signatureName: trim(signatureName), policyVersion: POLICY_VERSION },
+      })
       setSubmitted(true)
     } catch (err) {
       setError(err.message || 'Something went wrong.')
@@ -210,31 +162,18 @@ export default function Apply() {
           {/* Step 2: English Video */}
           {step === 2 && !submitted && (
             <div className="space-y-6">
-              <div>
-                <h2 className="text-2xl font-bold mb-2">English Video</h2>
-                <p className="text-gray-500 text-sm">Record a video in English. Introduce yourself, tell us why you want to be our Podcast Host, and why you are interested in working with us.</p>
-              </div>
-              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-sm text-yellow-800">Clear video, well-lit, under 3 minutes.</div>
-
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
-                {englishFile ? (
-                  <div>
-                    <p className="text-green-600 font-medium">{englishFile.name}</p>
-                    <p className="text-sm text-gray-500">{(englishFile.size / 1024 / 1024).toFixed(2)} MB</p>
-                    <button onClick={() => setEnglishFile(null)} className="mt-2 text-sm text-red-500 hover:underline">Remove</button>
-                  </div>
-                ) : (
-                  <p className="text-gray-500 mb-2">Click to select your English video</p>
-                )}
-                <input ref={engInputRef} type="file" accept="video/*" onChange={(e) => { setError(''); const f = e.target.files[0]; if (f) validateFile(f, setEnglishFile) && setEnglishFile(f) }} className="hidden" />
-                {!englishFile && (
-                  <button onClick={() => engInputRef.current?.click()} className="mt-4 px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300">Choose Video</button>
-                )}
-              </div>
+              <VideoStep
+                title="English Video"
+                description="Record your introduction in English. Tell us your name, why you want to be our Podcast Host, and why you want to work with us."
+                language="English"
+                file={englishFile}
+                onFile={(f) => { setError(''); setEnglishFile(f) }}
+                onClear={() => setEnglishFile(null)}
+              />
 
               <div className="flex gap-3 pt-4">
                 <button onClick={() => setStep(1)} className="px-6 py-2 border rounded-lg hover:bg-gray-50">Back</button>
-                <button onClick={() => { if (englishFile) setStep(3); else setError('Please select your English video.') }} className="flex-1 py-2 bg-pink-600 text-white rounded-lg font-medium hover:bg-pink-700 transition">Next</button>
+                <button onClick={() => { if (englishFile) setStep(3); else setError('Please record or upload your English video.') }} className="flex-1 py-2 bg-pink-600 text-white rounded-lg font-medium hover:bg-pink-700 transition">Next</button>
               </div>
             </div>
           )}
@@ -242,31 +181,18 @@ export default function Apply() {
           {/* Step 3: French Video */}
           {step === 3 && !submitted && (
             <div className="space-y-6">
-              <div>
-                <h2 className="text-2xl font-bold mb-2">French Video</h2>
-                <p className="text-gray-500 text-sm">Record a video in French. Introduce yourself, tell us why you want to be our Podcast Host, and why you are interested in working with us.</p>
-              </div>
-              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-sm text-yellow-800">Clear video, well-lit, under 3 minutes.</div>
-
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
-                {frenchFile ? (
-                  <div>
-                    <p className="text-green-600 font-medium">{frenchFile.name}</p>
-                    <p className="text-sm text-gray-500">{(frenchFile.size / 1024 / 1024).toFixed(2)} MB</p>
-                    <button onClick={() => setFrenchFile(null)} className="mt-2 text-sm text-red-500 hover:underline">Remove</button>
-                  </div>
-                ) : (
-                  <p className="text-gray-500 mb-2">Click to select your French video</p>
-                )}
-                <input ref={frInputRef} type="file" accept="video/*" onChange={(e) => { setError(''); const f = e.target.files[0]; if (f) validateFile(f, setFrenchFile) && setFrenchFile(f) }} className="hidden" />
-                {!frenchFile && (
-                  <button onClick={() => frInputRef.current?.click()} className="mt-4 px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300">Choose Video</button>
-                )}
-              </div>
+              <VideoStep
+                title="French Video"
+                description="Record your introduction in French, covering the same content as your English video."
+                language="French"
+                file={frenchFile}
+                onFile={(f) => { setError(''); setFrenchFile(f) }}
+                onClear={() => setFrenchFile(null)}
+              />
 
               <div className="flex gap-3 pt-4">
                 <button onClick={() => setStep(2)} className="px-6 py-2 border rounded-lg hover:bg-gray-50">Back</button>
-                <button onClick={() => { if (frenchFile) setStep(4); else setError('Please select your French video.') }} className="flex-1 py-2 bg-pink-600 text-white rounded-lg font-medium hover:bg-pink-700 transition">Next</button>
+                <button onClick={() => { if (frenchFile) setStep(4); else setError('Please record or upload your French video.') }} className="flex-1 py-2 bg-pink-600 text-white rounded-lg font-medium hover:bg-pink-700 transition">Next</button>
               </div>
             </div>
           )}
@@ -286,9 +212,67 @@ export default function Apply() {
                 <p><span className="font-medium">French Video:</span> {frenchFile?.name}</p>
               </div>
 
+              {/* Privacy agreement */}
+              <div className="border border-gray-300 rounded-lg p-4 space-y-4">
+                <div>
+                  <h3 className="font-semibold text-lg">Privacy Agreement</h3>
+                  <p className="text-sm text-gray-600 mt-1">
+                    We need your consent to use your details and video recordings for this
+                    application. Please read the{' '}
+                    <Link to="/privacy" target="_blank" className="text-pink-600 font-medium hover:underline">
+                      Privacy Policy
+                    </Link>{' '}
+                    (version {POLICY_VERSION}).
+                  </p>
+                </div>
+
+                <label htmlFor="consent-checkbox" className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    id="consent-checkbox"
+                    name="consented"
+                    type="checkbox"
+                    required
+                    checked={consentChecked}
+                    onChange={(e) => { setError(''); setConsentChecked(e.target.checked) }}
+                    className="mt-1 h-5 w-5 accent-pink-600"
+                  />
+                  <span className="text-sm text-gray-700">
+                    I have read and agree to the Privacy Policy. I agree that my personal
+                    information and video recordings may be used by the hiring team for the
+                    purpose of this application.
+                  </span>
+                </label>
+
+                <div>
+                  <label htmlFor="signature-name" className="block text-sm font-medium text-gray-700 mb-1">
+                    Signature — type your full name
+                  </label>
+                  <input
+                    id="signature-name"
+                    name="signature_name"
+                    type="text"
+                    autoComplete="name"
+                    required
+                    value={signatureName}
+                    onChange={(e) => { setError(''); setSignatureName(e.target.value) }}
+                    placeholder={`${form.first_name} ${form.last_name}`.trim()}
+                    aria-describedby="signature-help"
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-pink-500 outline-none italic"
+                  />
+                  <p id="signature-help" className="text-xs text-gray-500 mt-2">
+                    Typing your name here acts as your signature. We record the date, time, your
+                    IP address, and your browser type as evidence of your consent.
+                  </p>
+                </div>
+              </div>
+
               <div className="flex gap-3 pt-4">
                 <button onClick={() => setStep(3)} className="px-6 py-2 border rounded-lg hover:bg-gray-50">Back</button>
-                <button onClick={handleSubmit} disabled={submitting} className="flex-1 py-3 bg-pink-600 text-white rounded-lg font-medium hover:bg-pink-700 transition disabled:opacity-50">
+                <button
+                  onClick={handleSubmit}
+                  disabled={submitting || !consentChecked || signatureName.trim().length < 3}
+                  className="flex-1 py-3 bg-pink-600 text-white rounded-lg font-medium hover:bg-pink-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
                   {submitting ? 'Submitting...' : 'Submit Application'}
                 </button>
               </div>

@@ -1,0 +1,32 @@
+# Render Blueprint — deploy the backend API (free tier, no disk needed).
+# In Render: New → Blueprint → connect this repo, then fill in the sync:false values.
+#
+# Everything (applicants, consent records, and videos) lives in Turso.
+services:
+  - type: web
+    name: careers-connect-api
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    region: frankfurt
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: STORAGE_DRIVER
+        value: database
+      - key: MAX_VIDEO_MB
+        value: "25"
+      - key: CORS_ORIGIN
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
